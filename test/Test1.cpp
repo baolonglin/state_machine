@@ -1,5 +1,6 @@
 
 #include "fsm.h"
+#include <stdlib.h>
 
 class IEvent
 {
@@ -115,13 +116,70 @@ public:
     XXXService() :
         mStateMachine(this, &mIdleState)
     {
-        mIdleState.add(IEvent::INVITE              , mIdleState                , &XXXService::handleInvite);
-        mIdleState.add(IEvent::PROVISIONAL_RESPONSE, mEstablishingUnstableState);
+        //------------------------+-------------------------------------+---------------------------+---------------------------------------------------+-------------------------------+
+        //  CS                    |                 EV                  |      NS                   |        Transision                                 |         Guard                 |
+        //------------------------+-------------------------------------+---------------------------+---------------------------------------------------+-------------------------------+
+        mIdleState.add(                IEvent::INVITE                   , mIdleState                , &XXXService::handleInviteInIdle                   );
+        mIdleState.add(                IEvent::PROVISIONAL_RESPONSE     , mEstablishingUnstableState, NULL                                              , &XXXService::isTargetIncoming);
+        mIdleState.add(                IEvent::INVITE_ACCEPT            , mEstablishedState         , &XXXService::handleInviteAccept                   , &XXXService::isTargetIncoming);
+        mIdleState.add(                IEvent::INVITE_REJECT_ACKNOWLEDGE, mTerminatedState          , NULL                                              , &XXXService::isTargetOutgoing);
+
+        mEstablishingUnstableState.add(IEvent::INVITE_ACCEPT            , mEstablishedState         , &XXXService::handleInviteAccept                   , &XXXService::isTargetIncoming);
+        mEstablishingUnstableState.add(IEvent::INVITE_REJECT_ACKNOWLEDGE, mTerminatedState          , NULL                                              , &XXXService::isTargetOutgoing);
+        mEstablishingUnstableState.add(IEvent::BYE_ACCEPT               , mTerminatedState          , NULL                                              , &XXXService::isNotFromServiceAndTargetIncoming);
+        mEstablishingUnstableState.add(IEvent::BYE_REJECT               , mTerminatedState          , NULL                                              , &XXXService::isNotFromServiceAndTargetIncoming);
+
+        mEstablishedState.add(         IEvent::INVITE                   , mEstablishedState         , &XXXService::handleInviteInEstablished            , &XXXService::isFromTransferService);
+        mEstablishedState.add(         IEvent::INVITE_ACCEPT            , mEstablishedState         , &XXXService::collectInviteAcceptData              , &XXXService::isFromTransferService);
+        mEstablishedState.add(         IEvent::INVITE_ACKNOWLEDGE       , mEstablishedState         , &XXXService::handleInviteAckInEstablished         , &XXXService::isFromTransferService);
+        mEstablishedState.add(         IEvent::INVITE_REJECT_ACKNOWLEDGE, mEstablishedState         , &XXXService::handleInviteRejectAckInEstablished   , &XXXService::isFromTransferService);
+
     }
 
-    void handleInvite(const IEvent& ev)
+    void handleInviteInIdle(const IEvent& ev)
     {
     }
+
+    void handleInviteAccept(const IEvent& ev)
+    {
+    }
+
+    void handleInviteInEstablished(const IEvent& ev)
+    {
+    }
+
+    void collectInviteAcceptData(const IEvent& ev)
+    {
+    }
+
+    void handleInviteAckInEstablished(const IEvent& ev)
+    {
+    }
+
+    void handleInviteRejectAckInEstablished(const IEvent& ev)
+    {
+    }
+
+    bool isTargetIncoming(const IEvent& ev) const
+    {
+        return true;
+    }
+
+    bool isTargetOutgoing(const IEvent& ev) const
+    {
+        return true;
+    }
+
+    bool isNotFromServiceAndTargetIncoming(const IEvent& ev) const
+    {
+        return true;
+    }
+
+    bool isFromTransferService(const IEvent& ev) const
+    {
+        return true;
+    }
+
 private:
     typedef lbl::State<XXXService, IEvent, EventCompare> S;
     S mIdleState;
