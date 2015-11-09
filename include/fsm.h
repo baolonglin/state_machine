@@ -2,6 +2,8 @@
 #define LBL_FSM_H
 
 #include <map>
+#include <vector>
+#include <assert.h>
 
 namespace lbl
 {
@@ -60,29 +62,29 @@ namespace lbl
     template <class T, class EV>
     struct Action
     {
-        virtual void operator()( const T&, const EV& ) throw() = 0;
+        virtual void operator()( T&, const EV& ) throw() = 0;
     };
 
     //  Default implemenation of a NULL Action Handler
     template <class T, class EV>
     struct NoAction : public Action<T,EV>
     {
-        void operator()(  const T&, const EV& ) throw() {};
+        void operator()(  T&, const EV& ) throw() {};
     };
 
     // Event Action Handler for a class "T"
     template <class T, class EV>
     struct EventAction : public Action<T,EV>
     {
-        typedef void (T::*HANDLE)( const EV& ev );
+        typedef void (T::*ACTION)( const EV& ev );
 
-        explicit EventAction( HANDLE hAction ) : m_hAction(hAction) {}
-        void operator()( const T& _T, const EV& ev ) throw() { 
+        explicit EventAction( ACTION hAction ) : m_hAction(hAction) {}
+        void operator()(T& _T, const EV& ev ) throw() { 
             (_T.*m_hAction)(ev);
         }
 
     private:
-        HANDLE m_hAction;
+        ACTION m_hAction;
     };
 
     //-----------------------------------------------------------------------------
@@ -107,13 +109,13 @@ namespace lbl
     template <class T, class EV>
     struct EventGuard : public Guard<T, EV>
     {
-        typedef void (T::*HANDLE) (const EV& ev);
-        explicit EventGuard(HANDLE hGuard) : m_hGuard(hGuard) {}
+        typedef bool (T::*GUARD) (const EV& ev) const;
+        explicit EventGuard(GUARD hGuard) : m_hGuard(hGuard) {}
         bool operator() (const T& _T, const EV& ev) {
             return (_T.*m_hGuard)(ev);
         }
     private:
-        HANDLE m_hGuard;
+        GUARD m_hGuard;
     };
 
     //-----------------------------------------------------------------------------
@@ -139,13 +141,29 @@ namespace lbl
 
     public:
         State<T,EV,CMP>* operator()( const T& _T, const EV& ev ) throw() { 
-            (*m_evAction)(_T,ev);
-            return m_stNext;
+            if(m_guard == 0 || m_guard != 0 && (*m_guard)(_T, ev)) {
+                (*m_evAction)(_T,ev);
+                return m_stNext;
+            }
+            return 0;
+        }
+        bool isTransitable(const T& _T, const EV& ev) const
+        {
+            if(m_guard == 0 || m_guard != 0 && (*m_guard)(_T, ev)) 
+            {
+                return true;
+            }
+            return false;
         }
 
     protected:
-        Transition( const State<T,EV,CMP>& stNext, Action<T,EV>* evAction ) : 
-            m_stNext(const_cast<State<T,EV,CMP>*>(&stNext)), m_evAction(evAction) {
+        Transition( const State<T,EV,CMP>& stNext, 
+                Action<T,EV>* evAction, 
+                Guard<T,EV>* guard = 0 ) : 
+            m_stNext(const_cast<State<T,EV,CMP>*>(&stNext)), 
+            m_evAction(evAction), 
+            m_guard(guard) 
+        {
         }
         ~Transition() { delete m_evAction; }
 
@@ -154,6 +172,7 @@ namespace lbl
     private:
         State<T,EV,CMP>* m_stNext;
         Action<T,EV>* m_evAction;
+        Guard<T, EV>* m_guard;
     };
 
     //-----------------------------------------------------------------------------
@@ -173,17 +192,17 @@ namespace lbl
     class State
     {
         // State Transition Table Type
-
-        typedef std::map<const EV,const Transition<T,EV,CMP>*,CMP>
-            TransitionTable;
-
+        typedef typename EV::EventID event_id;
+        typedef std::vector<const Transition<T,EV,CMP>*> TransitionVector;
+        typedef std::map<const event_id,
+                TransitionVector,CMP> TransitionTable;
     public:
         typedef State<T,EV,CMP> state_type;
-        //typedef EventAction<T,EV>::HANDLE HANDLE;
-        typedef void (T::*HANDLE)( const EV& ev );
+        typedef typename EventAction<T,EV>::ACTION ACTION;
+        typedef typename EventGuard<T,EV>::GUARD GUARD;
 
     public:
-        State( HANDLE hEnter = 0, HANDLE hExit = 0 ) {
+        State( ACTION hEnter = 0, ACTION hExit = 0 ) {
             if ( hEnter == 0 ) {
                 m_evEnter = new NoAction<T,EV>;
             }
@@ -194,13 +213,19 @@ namespace lbl
             if ( hExit == 0 ) {
                 m_evExit = new NoAction<T,EV>;
             }
-            else { m_evExit = new EventAction<T,EV>(hExit); }
+            else {
+                m_evExit = new EventAction<T,EV>(hExit); 
+            }
         }
         ~State() {
-            TransitionTable::iterator iter;
+            typename TransitionTable::iterator iter;
             for ( iter = m_stTable.begin(); iter != m_stTable.end(); iter++ ) {
-                delete const_cast<Transition<T,EV,CMP>*>( iter->second );
+                TransitionVector& tv = iter->second;
+                for(typename TransitionVector::iterator iterv = tv.begin(); iterv != tv.end(); ++iterv) {
+                    delete const_cast<Transition<T,EV,CMP>*>( *iterv );
+                }
             }
+
             delete m_evEnter;
             delete m_evExit;
         }
@@ -211,7 +236,7 @@ namespace lbl
 
         // Adds an entry to the State Transition Table
 
-        void Add( const EV& ev, const state_type& stNext, HANDLE hAction = 0 ) {
+        void add( const event_id& ev, const state_type& stNext, ACTION hAction = 0, GUARD hGuard = 0) {
             Action<T,EV>* evAction;
             if ( hAction == 0 ) {
                 evAction = new NoAction<T,EV>;
@@ -219,20 +244,28 @@ namespace lbl
             else {
                 evAction = new EventAction<T,EV>(hAction); 
             }
-            m_stTable[ev] = new Transition<T,EV,CMP>(stNext,evAction);
+
+            Guard<T, EV>* guard;
+            if(hGuard == 0) {
+                guard = new NoGuard<T,EV>();
+            } else {
+                guard = new EventGuard<T, EV>(hGuard);
+            }
+
+            m_stTable[ev].push_back(new Transition<T,EV,CMP>(stNext,evAction,guard));
         }
 
         // Retrieves the Transition from the State Transition Table
-
-        Transition<T,EV,CMP>* const operator[]( const EV& ev) {
-            return const_cast<Transition<T,EV,CMP>*>(m_stTable[ev]);
+        const TransitionVector& operator[]( const event_id& ev) const {
+            return m_stTable[ev];
         }
 
     public:
         void Exit( const T& _T, const EV& ev ) throw() { (*m_evExit)(_T,ev); }
         void Enter( const T& _T, const EV& ev ) throw() { (*m_evEnter)(_T,ev); }
 
-        private:
+    private:
+
         TransitionTable m_stTable;
 
         Action<T,EV>* m_evEnter;
@@ -299,10 +332,12 @@ namespace lbl
     private:
         T* m_T;
 
+        typedef std::vector<const Transition<T,EV,CMP>*> TransitionVector;
+
     public: 
         explicit StateMachine( T* _T, State<T,EV,CMP>* const stStart ) : 
             m_T(_T), m_stStart(stStart), m_stCurrent(stStart), m_stThis(eStopped) {}
-        ~StateMachine() { delete m_T; }
+        ~StateMachine() { }
 
 #endif      // DERIVE_STATE_MACHINE
 
@@ -334,6 +369,7 @@ namespace lbl
 
     private:
         int ProcessEvent( const EV& event );
+        bool transitable(const TransitionVector& tv, const EV& event);
 
     private:
         int m_stThis;
@@ -348,32 +384,55 @@ namespace lbl
     //
 
     template <class T, class EV, class CMP>
+    bool StateMachine<T,EV,CMP>::transitable(const TransitionVector& tv, const EV& event)
+    {
+        for(typename TransitionVector::iter it = tv.begin(); it != tv.end(); ++it)
+        {
+            if(it->isTransitable(THIS, event))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    template <class T, class EV, class CMP>
     int StateMachine<T,EV,CMP>::ProcessEvent( const EV& event )
     {
-        Transition<T,EV,CMP>* const trEntry = (*m_stCurrent)[event];
+        TransitionVector& trEntry = (*m_stCurrent)[event.getEventID()];
 
         // Valid Transition?
-
-        if ( !trEntry )
+        if ( trEntry.empty() || !transitable(trEntry, event))
         {
             return false;
         }
 
         // Invoke State Exit Criteria
-
         m_stCurrent->Exit(THIS,event);
 
-        // Invoke Transition (returns new State)
+        for(typename TransitionVector::iter it = trEntry.begin(); it != trEntry.end(); ++it)
+        {
+            // Invoke Transition (returns new State)
+            m_stCurrent = (**it)(THIS,event);
+            if(m_stCurrent) {
+                break;
+            }
+        }
 
-        m_stCurrent = (*trEntry)(THIS,event);
-
-        // Invoke State Entry Criteria for new State
-
-        m_stCurrent->Enter(THIS,event);
+        if(m_stCurrent)
+        {
+            // Invoke State Entry Criteria for new State
+            m_stCurrent->Enter(THIS,event);
+        } 
+        else 
+        {
+            // Valid Transition?
+            assert(false);
+            return false;
+        }
 
         return true;
     }
-
 }
 
 #endif

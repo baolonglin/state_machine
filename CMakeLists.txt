@@ -1,4 +1,6 @@
 
+cmake_minimum_required(VERSION 3.3)
 PROJECT (StateMachineLite)
 
-ADD_SUBDIRECTORY (src test)
+INCLUDE_DIRECTORIES(include)
+ADD_SUBDIRECTORY (test)
